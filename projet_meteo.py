@@ -30,6 +30,23 @@ def nettoyage(nom):
     nom = ''.join(c for c in nom if unicodedata.category(c) != 'Mn')
     return nom
 
+def get_response(url):
+            response = requests.get(url)
+            if response.status_code == 200:
+                response.encoding = 'utf-8'
+            return response
+
+def scraping(soup):
+    for i in range(1,8):
+        div = soup.select_one(f"div.dn{i}")
+        element = div.select("i")
+        #print(div.text.strip() , end=" ")
+        date = element[0].text
+        temperature_min = element[2].text.split("°")[0]
+        temperature_max = element[1].text.split("°")[0]
+        journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
+    #return journaux
+
 # Appel de l'API pour récupérer la liste des ville
 url = "https://geo.api.gouv.fr/communes"
 response = requests.get(url)
@@ -57,7 +74,9 @@ connexion.commit()
 journaux = []
 for ville in grandes_villes:
         ville_name= ville["nom"]
-        result = connexion.execute(f"SELECT id FROM ville WHERE ville = '{ville_name}'")
+        code_region = ville["codeRegion"]
+        result = connexion.execute(f"SELECT id FROM ville WHERE ville = '{ville_name}';")
+        region_nom = connexion.execute(f"SELECT region FROM region WHERE code = '{code_region}';")
         for row in result:
             id_ville = row[0] 
         url = f"https://fr.tutiempo.net/{ville_name}.html"
@@ -65,15 +84,19 @@ for ville in grandes_villes:
         if response.status_code == 200:
             response.encoding = 'utf-8'
             soup = BeautifulSoup(response.text, 'html.parser')
-            for i in range(1,8):
-                div = soup.select_one(f"div.dn{i}")
-                element = div.select("i")
-                #print(div.text.strip() , end=" ")
-                date = element[0].text
-                temperature_min = element[2].text.split("°")[0]
-                temperature_max = element[1].text.split("°")[0]
-                #print(f"la ville de {ville_name} Date : [{date}], Température Min : [{temperature_min}], Température Max : [{temperature_max}]    idville = {id_ville}")
-                journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})      
+            region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
+            if region == region_nom:       
+                scraping(soup)
+                    
+            if region != region_nom:
+                url_2 = f"https://fr.tutiempo.net/{region_nom}/{ville_name}.html"
+                response = requests.get(url)
+                if response.status_code == 200:
+                    response.encoding = 'utf-8'
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
+                    scraping(soup)
+                      
         else:
             print(f"Echec de la requette. code HTTP : {response.status_code} ")
 

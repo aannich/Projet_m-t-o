@@ -36,23 +36,14 @@ def get_response(url):
                 response.encoding = 'utf-8'
             return response
 
-def scraping(soup):
-    for i in range(1,8):
-        div = soup.select_one(f"div.dn{i}")
-        element = div.select("i")
-        #print(div.text.strip() , end=" ")
-        date = element[0].text
-        temperature_min = element[2].text.split("°")[0]
-        temperature_max = element[1].text.split("°")[0]
-        journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
-    #return journaux
+
 
 # Appel de l'API pour récupérer la liste des ville
 url = "https://geo.api.gouv.fr/communes"
 response = requests.get(url)
+grandes_villes = []
 if response.status_code == 200:
     villes = response.json()
-    grandes_villes = []
     for ville in villes:
         for cle in ville.keys():
             if cle == "population":
@@ -63,50 +54,9 @@ else:
     print(f"Erreur : {response.status_code}")
 
 connexion = sqlite3.connect("meteoDB.db")
-connexion.execute("CREATE TABLE IF NOT EXISTS ville(id INTEGER PRIMARY KEY AUTOINCREMENT, ville TEXT not null, code_region INTEGER, FOREIGN KEY (code_region) REFERENCES region(code) );")
+connexion.execute("CREATE TABLE IF NOT EXISTS ville(id INTEGER PRIMARY KEY AUTOINCREMENT, ville TEXT not null, code_region TEXT, FOREIGN KEY (code_region) REFERENCES region(code) );")
 connexion.execute("CREATE TABLE IF NOT EXISTS rapport_journalier(id INTEGER PRIMARY KEY AUTOINCREMENT, temp_max INTEGER, temp_min INTEGER, date TEXT, id_ville INTEGER, FOREIGN KEY (id_ville) REFERENCES ville(id));")
-connexion.execute("CREATE TABLE IF NOT EXISTS region (code INTEGER PRIMARY KEY, region TEXT);")
-
-for v in grandes_villes:
-    connexion.execute(f"INSERT INTO ville(ville,code_region) VALUES('{v['nom']}','{v['codeRegion']}');")
-connexion.commit()
-
-journaux = []
-for ville in grandes_villes:
-        ville_name= ville["nom"]
-        code_region = ville["codeRegion"]
-        result = connexion.execute(f"SELECT id FROM ville WHERE ville = '{ville_name}';")
-        region_nom = connexion.execute(f"SELECT region FROM region WHERE code = '{code_region}';")
-        for row in result:
-            id_ville = row[0] 
-        url = f"https://fr.tutiempo.net/{ville_name}.html"
-        response = requests.get(url)
-        if response.status_code == 200:
-            response.encoding = 'utf-8'
-            soup = BeautifulSoup(response.text, 'html.parser')
-            region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
-            if region == region_nom:       
-                scraping(soup)
-                    
-            if region != region_nom:
-                url_2 = f"https://fr.tutiempo.net/{region_nom}/{ville_name}.html"
-                response = requests.get(url)
-                if response.status_code == 200:
-                    response.encoding = 'utf-8'
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
-                    scraping(soup)
-                      
-        else:
-            print(f"Echec de la requette. code HTTP : {response.status_code} ")
-
-# Alimenter la table rapport_journalier
-for journal in journaux:
-    connexion.execute(f"INSERT INTO rapport_journalier(temp_max, temp_min, date, id_ville) VALUES ('{journal['max']}', '{journal['min']}', '{journal['date']}', '{journal['id_ville']}');")
-    connexion.commit()
-
-
-
+connexion.execute("CREATE TABLE IF NOT EXISTS region (code TEXT PRIMARY KEY, region TEXT);")
 # le fichier csv qui contient la liste des regions avec le code de la region et telecherger 
 # du site de l'institut national de la statistique et des études économiques 
 #  https://www.insee.fr/fr/information/6051727
@@ -117,8 +67,80 @@ with open('region_2022.csv', newline='') as file:
         code = ligne[0]
         nom = nettoyage(ligne[3])
         # Alimenter la table region
-        connexion.execute(f"INSERT INTO region (code, region) VALUES ({code}, '{nom}');")
+        connexion.execute(f"INSERT INTO region (code, region) VALUES (?, ?);", (code, nom))
         connexion.commit()
+
+
+for v in grandes_villes:
+    connexion.execute(f"INSERT INTO ville(ville,code_region) VALUES(?,?);", (v['nom'],v['codeRegion']))
+connexion.commit()
+
+journaux = []
+
+
+
+"""for ville in grandes_villes:
+     print(ville)"""
+
+for ville in grandes_villes:
+    ville_name= ville["nom"]
+    code_region = ville["codeRegion"]
+    nb_occurence = connexion.execute(f"SELECT COUNT(*) FROM ville WHERE ville = ? ; ", (ville_name,))
+    for row in nb_occurence:
+        nbr_occurence =row[0]
+
+    info_ville = connexion.execute(f"SELECT v.id, r.region FROM ville v INNER JOIN region r ON v.code_region = r.code WHERE v.ville = ? AND v.code_region = ?;", (ville_name, code_region))
+    for row in info_ville:
+        id_ville = row[0]
+        nom_region = row[1]   
+
+    url = f"https://fr.tutiempo.net/{ville_name}.html"
+    response = requests.get(url)
+    if response.status_code == 200:
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
+        if region == nom_region:
+            for i in range(1,8):
+                div = soup.select_one(f"div.dn{i}")
+                element = div.select("i")
+                #print(div.text.strip() , end=" ")
+                date = element[0].text
+                temperature_min = element[2].text.split("°")[0]
+                temperature_max = element[1].text.split("°")[0]
+                journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
+
+            """if(nbr_occurence > 1):
+                url_2 = f"https://fr.tutiempo.net/{nom_region}/{ville_name}.html"
+                response = requests.get(url_2)
+                if response.status_code == 200:
+                    response.encoding = 'utf-8'
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    for i in range(1,8):
+                        div = soup.select_one(f"div.dn{i}")
+                        element = div.select("i")
+                        #print(div.text.strip() , end=" ")
+                        date = element[0].text
+                        temperature_min = element[2].text.split("°")[0]
+                        temperature_max = element[1].text.split("°")[0]
+                        journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
+                else:
+                    print(f"Echec de la requette. code HTTP !!!!!!!!!!!!!!!!!!!!!! : {response.status_code} ")
+        """
+        
+        
+        
+
+# Alimenter la table rapport_journalier
+for journal in journaux:
+    connexion.execute(f"INSERT INTO rapport_journalier(temp_max, temp_min, date, id_ville) VALUES ('{journal['max']}', '{journal['min']}', '{journal['date']}', '{journal['id_ville']}');")
+    connexion.commit()
+
+
+
+
+
+
     
 with open('donnees_meteo.csv', 'w', newline='') as file:
     csv_writer = csv.writer (file, delimiter=',', lineterminator='\r\n') #\r retour à la ligne, \n nouvelle ligne

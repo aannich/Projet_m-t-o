@@ -25,7 +25,7 @@ import csv
 
 # fonction nettoyage pour nettoyer les noms des ville et des regions  (enlève accents, espaces, met en minuscules)               
 def nettoyage(nom):
-    nom = nom.lower().replace(" ", "-")
+    nom = nom.lower().replace(" ", "-").replace("'", "-")
     nom = unicodedata.normalize('NFD', nom)  # NFD Décomposition canonique
     nom = ''.join(c for c in nom if unicodedata.category(c) != 'Mn')
     return nom
@@ -39,37 +39,40 @@ def get_response(url):
 
 
 # Appel de l'API pour récupérer la liste des ville
-url = "https://geo.api.gouv.fr/communes"
-response = requests.get(url)
+url_communes = "https://geo.api.gouv.fr/communes"
+response = requests.get(url_communes)
 grandes_villes = []
 if response.status_code == 200:
     villes = response.json()
     for ville in villes:
         for cle in ville.keys():
             if cle == "population":
-                if (ville["population"] > 100000 ):
+                if (ville["population"] > 50000 ):
                     ville["nom"] = nettoyage(ville["nom"])
                     grandes_villes.append(ville)
 else:
     print(f"Erreur : {response.status_code}")
 
+url_regions = "https://geo.api.gouv.fr/regions"
+response = requests.get(url_regions)
+regions_fr = []
+if response.status_code == 200:
+    regions = response.json()
+    for region in regions:
+        region["nom"] = nettoyage(region["nom"])
+        regions_fr.append(region)
+else:
+    print(f"Erreur : {response.status_code}")
+
+
 connexion = sqlite3.connect("meteoDB.db")
 connexion.execute("CREATE TABLE IF NOT EXISTS ville(id INTEGER PRIMARY KEY AUTOINCREMENT, ville TEXT not null, code_region TEXT, FOREIGN KEY (code_region) REFERENCES region(code) );")
 connexion.execute("CREATE TABLE IF NOT EXISTS rapport_journalier(id INTEGER PRIMARY KEY AUTOINCREMENT, temp_max INTEGER, temp_min INTEGER, date TEXT, id_ville INTEGER, FOREIGN KEY (id_ville) REFERENCES ville(id));")
 connexion.execute("CREATE TABLE IF NOT EXISTS region (code TEXT PRIMARY KEY, region TEXT);")
-# le fichier csv qui contient la liste des regions avec le code de la region et telecherger 
-# du site de l'institut national de la statistique et des études économiques 
-#  https://www.insee.fr/fr/information/6051727
-with open('region_2022.csv', newline='') as file:
-    file.readline()  # Ignore la première ligne (en-têtes)
-    csv_reader = csv.reader(file, delimiter=',')
-    for ligne in csv_reader:
-        code = ligne[0]
-        nom = nettoyage(ligne[3])
-        # Alimenter la table region
-        connexion.execute(f"INSERT INTO region (code, region) VALUES (?, ?);", (code, nom))
-        connexion.commit()
 
+for region in regions:
+    connexion.execute(f"INSERT INTO region (code, region) VALUES (?, ?);", (region['code'],region['nom']))
+connexion.commit()
 
 for v in grandes_villes:
     connexion.execute(f"INSERT INTO ville(ville,code_region) VALUES(?,?);", (v['nom'],v['codeRegion']))
@@ -82,25 +85,27 @@ journaux = []
 """for ville in grandes_villes:
      print(ville)"""
 
+cpt =0
+regions_anciennes = ["languedoc-roussillon", "midi-pyrenees", "alsace", "champagne-ardenne", "lorraine", "nord-pas-de-calais",
+                    "limousin", "picardie", "poitou-charentes", "rhone-alpes","auvergne"
+                     ]
 for ville in grandes_villes:
     ville_name= ville["nom"]
     code_region = ville["codeRegion"]
     nb_occurence = connexion.execute(f"SELECT COUNT(*) FROM ville WHERE ville = ? ; ", (ville_name,))
     for row in nb_occurence:
         nbr_occurence =row[0]
-
     info_ville = connexion.execute(f"SELECT v.id, r.region FROM ville v INNER JOIN region r ON v.code_region = r.code WHERE v.ville = ? AND v.code_region = ?;", (ville_name, code_region))
     for row in info_ville:
         id_ville = row[0]
-        nom_region = row[1]   
-
+        nom_region = row[1]
     url = f"https://fr.tutiempo.net/{ville_name}.html"
     response = requests.get(url)
     if response.status_code == 200:
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
         region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
-        if region == nom_region:
+        if (nom_region in region or region in nom_region) or region in regions_anciennes:
             for i in range(1,8):
                 div = soup.select_one(f"div.dn{i}")
                 element = div.select("i")
@@ -108,14 +113,22 @@ for ville in grandes_villes:
                 date = element[0].text
                 temperature_min = element[2].text.split("°")[0]
                 temperature_max = element[1].text.split("°")[0]
-                journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
-
-            """if(nbr_occurence > 1):
-                url_2 = f"https://fr.tutiempo.net/{nom_region}/{ville_name}.html"
-                response = requests.get(url_2)
-                if response.status_code == 200:
-                    response.encoding = 'utf-8'
-                    soup = BeautifulSoup(response.text, 'html.parser')
+                journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})        
+        else:
+            info_ville = connexion.execute(f"SELECT v.id , v.ville, r.region from ville v JOIN region r ON r.code = v.code_region WHERE v.ville = ? AND r.region = ?;", (ville_name,nom_region))
+            for row in info_ville:
+                id_ville = row[0]
+                ville_name = row[1]
+                nom_region = row[2]
+                #print(id_ville,ville_name,nom_region)
+                #            
+            url_2 = f"https://fr.tutiempo.net/{nom_region}/{ville_name}.html"
+            response = requests.get(url_2)
+            if response.status_code == 200:
+                response.encoding = 'utf-8'
+                soup = BeautifulSoup(response.text, 'html.parser')
+                region = nettoyage(soup.select_one("body > div.allcont > div.contpage.eltiempo > div:nth-child(1) > p > a").text)
+                if (nom_region in region):
                     for i in range(1,8):
                         div = soup.select_one(f"div.dn{i}")
                         element = div.select("i")
@@ -124,10 +137,37 @@ for ville in grandes_villes:
                         temperature_min = element[2].text.split("°")[0]
                         temperature_max = element[1].text.split("°")[0]
                         journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
-                else:
-                    print(f"Echec de la requette. code HTTP !!!!!!!!!!!!!!!!!!!!!! : {response.status_code} ")
-        """
+
+                    else:
+                        url_2 = f"https://fr.tutiempo.net/{region}/{ville_name}.html"
+                        response = requests.get(url_2)
+                        if response.status_code == 200:
+                            response.encoding = 'utf-8'
+                            soup = BeautifulSoup(response.text, 'html.parser')
+                            for i in range(1,8):
+                                div = soup.select_one(f"div.dn{i}")
+                                element = div.select("i")
+                                #print(div.text.strip() , end=" ")
+                                date = element[0].text
+                                temperature_min = element[2].text.split("°")[0]
+                                temperature_max = element[1].text.split("°")[0]
+                                journaux.append({"max" : f"{temperature_max}", "min" : f"{temperature_min}","date" : f"{date}", "id_ville" : f"{id_ville}"})
+                        else:
+                            print(f"Echec de la requette. code HTTP !!! : {response.status_code} ")
+                            print(url_2)
+                 
+    else:
+        print(f"Echec de la requette. code HTTP  : {response.status_code} ")
+        print(url)
+
+
+
+    
+
+
         
+    
+    
         
         
 
@@ -151,5 +191,4 @@ with open('donnees_meteo.csv', 'w', newline='') as file:
         csv_writer.writerow(ligne)
     file.close()
 
-connexion.close()
 
